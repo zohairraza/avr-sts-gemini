@@ -4,3 +4,5 @@ token.json
 package-lock.json
 *.bak
 utils/token.json
+logs/
+saved_audios/
