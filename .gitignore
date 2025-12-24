@@ -3,6 +3,8 @@ node_modules
 token.json
 package-lock.json
 *.bak
+*.bak*
+*.lastwork
 utils/token.json
 logs/
 saved_audios/
