@@ -16,13 +16,17 @@ WORKDIR /usr/src/app
 
 COPY --chown=node:node --from=development /usr/src/app/node_modules ./node_modules
 
-COPY --chown=node:node avr_tools/avr_transfer.js avr_tools/avr_transfer.js
+# Copy all tool directories
+COPY --chown=node:node avr_tools/ ./avr_tools/
+COPY --chown=node:node tools/ ./tools/
+COPY --chown=node:node utils/ ./utils/
 
-COPY --chown=node:node avr_tools/avr_hangup.js avr_tools/avr_hangup.js
+# Copy main application files
+COPY --chown=node:node loadTools.js .
+COPY --chown=node:node index.js .
 
-COPY --chown=node:node loadTools.js loadTools.js
-
-COPY --chown=node:node index.js index.js
+# Create and set permissions for the logs directory
+RUN mkdir -p logs && chown -R node:node logs
 
 USER node
 

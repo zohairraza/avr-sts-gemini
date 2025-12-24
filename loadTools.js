@@ -18,13 +18,20 @@ function loadTools() {
     
     return fs.readdirSync(dirPath)
       .map(file => {
-        const tool = require(path.join(dirPath, file));
-        return {
-          name: tool.name,
-          description: tool.description || '',
-          parameters: tool.input_schema || {},
-        };
-      });
+        try {
+          const tool = require(path.join(dirPath, file));
+          return {
+            name: tool.name,
+            description: tool.description || '',
+            parameters: tool.input_schema || {},
+          };
+        } catch (error) {
+          console.error(`Error loading tool from file: ${file}`);
+          console.error(error);
+          return null;
+        }
+      })
+      .filter(tool => tool !== null);
   };
 
   // Load tools from both directories
@@ -62,7 +69,10 @@ function getToolHandler(name) {
   }
 
   const tool = require(toolPath);
-  return tool.handler;
+  // Return a function that wraps the actual handler, injecting the context
+  return async (sessionUuid, args, context) => {
+    return await tool.handler(sessionUuid, args, context);
+  };
 }
 
 module.exports = { loadTools, getToolHandler };

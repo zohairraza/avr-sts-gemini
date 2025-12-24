@@ -1,3 +1,9 @@
 node_modules
 .env
 tools
+token.json
+package-lock.json
+logs/
+saved_audios/
+*.bak
+utils/token.json
