@@ -89,7 +89,7 @@ const initializeResamplers = async () => {
 const connectToGeminiSdk = async (sessionUuid, callbacks) => {
   const model =
     process.env.GEMINI_MODEL ||
-    "gemini-live-2.5-flash-preview-native-audio-09-2025";
+    "gemini-live-2.5-flash-preview-native-audio-12-2025";
 
   const config = {
     responseModalities: [Modality.AUDIO],
@@ -244,7 +244,9 @@ const handleClientConnection = (clientWs) => {
           if (message.audio && session) {
             const audioBuffer = Buffer.from(message.audio, "base64");
             // Save user audio (8kHz PCM from client)
-            await saveAudioChunk("user", sessionUuid, audioBuffer);
+            if (process.env.SAVE_AUDIO_CHUNKS === 'true') {
+              saveAudioChunk("user", sessionUuid, audioBuffer).catch(console.error);
+            }
             const upsampledAudio = convert8kTo16k(audioBuffer);
             session.sendRealtimeInput({
               audio: {
@@ -312,7 +314,9 @@ const handleClientConnection = (clientWs) => {
                 );
                 const audioChunk = Buffer.from(inlineData.data, "base64");
                 // Save AI audio (24kHz PCM from Gemini)
-                await saveAudioChunk("ai", sessionUuid, audioChunk);
+                if (process.env.SAVE_AUDIO_CHUNKS === 'true') {
+                  saveAudioChunk("ai", sessionUuid, audioChunk).catch(console.error);
+                }
                 audioFrames = processGeminiAudioChunk(audioChunk);
                 // Send audio frames to client
                 audioFrames.forEach((frame) => {
