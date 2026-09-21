@@ -15,7 +15,6 @@
     "@google/genai": "^1.40.0",
     "axios": "^1.13.4",
     "dotenv": "^17.2.4",
-    "googleapis": "^105.0.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {
