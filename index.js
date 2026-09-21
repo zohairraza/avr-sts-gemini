@@ -280,12 +280,13 @@ const connectToGeminiSdk = async (sessionUuid, systemInstruction, callbacks) => 
     log("Realtime input config:", config.realtimeInputConfig);
   }
 
-  // Upstream thinking configuration (default: MINIMAL level, 0 budget for zero voice latency)
-  config.thinkingConfig = {
-    thinkingLevel: process.env.GEMINI_THINKING_LEVEL || ThinkingLevel.MINIMAL,
-    thinkingBudget: +process.env.GEMINI_THINKING_BUDGET || 0,
-  };
-  log(`Thinking configured (budget: ${config.thinkingConfig.thinkingBudget}, level: ${config.thinkingConfig.thinkingLevel})`);
+  // Thinking: the API accepts either a budget (2.5 models; 0 disables) or a level (3.x models), never both.
+  if (process.env.GEMINI_THINKING_BUDGET !== undefined && process.env.GEMINI_THINKING_BUDGET !== "") {
+    config.thinkingConfig = { thinkingBudget: parseInt(process.env.GEMINI_THINKING_BUDGET, 10) };
+  } else {
+    config.thinkingConfig = { thinkingLevel: process.env.GEMINI_THINKING_LEVEL || ThinkingLevel.MINIMAL };
+  }
+  log("Thinking configured:", config.thinkingConfig);
 
   // Load tools
   try {
