@@ -16,24 +16,13 @@ WORKDIR /usr/src/app
 
 COPY --chown=node:node --from=development /usr/src/app/node_modules ./node_modules
 
-# Copy all tool directories
-COPY --chown=node:node avr_tools/ ./avr_tools/
-# tools/ and utils/ are provided by avr-gemini-tools via volume mounts
-RUN mkdir -p tools utils && chown node:node tools utils
+COPY --chown=node:node avr_tools/avr_transfer.js avr_tools/avr_transfer.js
 
-# Copy main application files
-COPY --chown=node:node loadTools.js .
-COPY --chown=node:node index.js .
+COPY --chown=node:node avr_tools/avr_hangup.js avr_tools/avr_hangup.js
 
-# Create and set permissions for the logs directory
-RUN mkdir -p logs && chown -R node:node logs
+COPY --chown=node:node loadTools.js loadTools.js
 
-# Disable audio saving by default for better performance
-ENV AUDIO_SAVE_ENABLED=false
-
-# Default thinking configuration
-ENV GEMINI_THINKING_LEVEL=MINIMAL
-ENV GEMINI_THINKING_BUDGET=0
+COPY --chown=node:node index.js index.js
 
 USER node
 
