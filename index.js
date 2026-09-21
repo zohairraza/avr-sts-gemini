@@ -332,6 +332,9 @@ const handleClientConnection = (clientWs, ctx = {}) => {
 
   let audioBuffer8k = [];
   let session = null;
+
+  // Diagnostics for explaining unexpected disconnects (e.g. 1011)
+  const diag = { openedAt: null, lastServerMsgAt: null, goAwayAt: null, totalTokens: null };
   let audioFrames = [];
 
 
@@ -494,9 +497,19 @@ const handleClientConnection = (clientWs, ctx = {}) => {
       // session is now the Gemini SDK's session object
       session = await connectToGeminiSdk(sessionUuid, systemInstruction, {
         onopen: function () {
+          diag.openedAt = Date.now();
           logDebug("Gemini Session Opened");
         },
         onmessage: async function (message) {
+          diag.lastServerMsgAt = Date.now();
+          if (message.usageMetadata?.totalTokenCount) {
+            diag.totalTokens = message.usageMetadata.totalTokenCount;
+          }
+          // Google warns before it ends a session (usually ~1 min ahead)
+          if (message.goAway) {
+            diag.goAwayAt = Date.now();
+            logError("Gemini GoAway received, session ending soon. timeLeft:", message.goAway.timeLeft);
+          }
           if (process.env.DEBUG_LOGS === 'true') {
             // Only log message if it doesn't contain inlineData (audio chunks)
             const hasInlineData = message.serverContent?.modelTurn?.parts?.some(part => part.inlineData);
@@ -623,11 +636,18 @@ const handleClientConnection = (clientWs, ctx = {}) => {
           );
         },
         onclose: function (event) {
-          logInfo(
+          const secs = (t) => (t ? `${Math.round((Date.now() - t) / 1000)}s` : "n/a");
+          const logClose = event?.code === 1000 ? logInfo : logError;
+          logClose(
             "Gemini Session Closed. Code:",
             event?.code,
             "Reason:",
             event?.reason,
+            `| session age: ${secs(diag.openedAt)}`,
+            `| since last Gemini message: ${secs(diag.lastServerMsgAt)}`,
+            `| goAway warning: ${diag.goAwayAt ? `yes, ${secs(diag.goAwayAt)} ago` : "no"}`,
+            `| last token count: ${diag.totalTokens ?? "n/a"}`,
+            `| client socket still open: ${clientWs.readyState === WebSocket.OPEN}`,
           );
           clientWs.close();
         },
