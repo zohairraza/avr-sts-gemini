@@ -212,8 +212,7 @@ const initializeResamplers = async () => {
 const connectToGeminiSdk = async (sessionUuid, systemInstruction, callbacks) => {
   log(`[DEBUG] Starting Gemini connection for session ${sessionUuid}`);
   const model =
-    process.env.GEMINI_MODEL ||
-    "gemini-2.5-flash-native-audio-preview-12-2025";
+    process.env.GEMINI_MODEL || "gemini-3.1-flash-live-preview";
   log(`[DEBUG] Using model: ${model}`);
 
   const ai = createGoogleGenAIClient();
