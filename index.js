@@ -53,71 +53,6 @@ const logInfo = (...args) => {
   console.info(`[${new Date().toISOString()}]`, ...args);
 };
 
-const isTruthy = (value) =>
-  ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
-
-/**
- * Returns true when Vertex AI (Google Cloud Console) mode is enabled.
- * Supports SDK-standard and AVR-prefixed env vars.
- */
-const isVertexAiMode = () =>
-  isTruthy(process.env.GOOGLE_GENAI_USE_VERTEXAI) ||
-  isTruthy(process.env.GEMINI_USE_VERTEXAI);
-
-/**
- * Creates a GoogleGenAI client for either Google AI Studio (API key) or Vertex AI.
- *
- * Vertex AI: set GOOGLE_GENAI_USE_VERTEXAI=true (or GEMINI_USE_VERTEXAI=true),
- * GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and configure ADC
- * (e.g. GOOGLE_APPLICATION_CREDENTIALS or gcloud application-default login).
- *
- * Google AI Studio: set GEMINI_API_KEY (or GOOGLE_API_KEY).
- */
-const createGoogleGenAIClient = () => {
-  if (isVertexAiMode()) {
-    const project =
-      process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_VERTEX_PROJECT;
-    const location =
-      process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_VERTEX_LOCATION;
-
-    if (!project || !location) {
-      throw new Error(
-        "Vertex AI mode requires GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION " +
-          "(or GEMINI_VERTEX_PROJECT and GEMINI_VERTEX_LOCATION)"
-      );
-    }
-
-    const options = { vertexai: true, project, location };
-    if (process.env.GEMINI_API_VERSION) {
-      options.apiVersion = process.env.GEMINI_API_VERSION;
-    }
-
-    log(
-      `Google GenAI client: Vertex AI (project=${project}, location=${location})`
-    );
-    return new GoogleGenAI(options);
-  }
-
-  const apiKey =
-    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
-  if (!apiKey) {
-    throw new Error(
-      "Google AI Studio mode requires GEMINI_API_KEY (or GOOGLE_API_KEY). " +
-        "For Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with project and location."
-    );
-  }
-
-  const options = { apiKey };
-  if (process.env.GEMINI_API_VERSION) {
-    options.apiVersion = process.env.GEMINI_API_VERSION;
-  } else {
-    options.apiVersion = "v1alpha";
-  }
-
-  log("Google GenAI client: Google AI Studio (API key)");
-  return new GoogleGenAI(options);
-};
-
 
 function substituteEnvVars(str) {
   if (!str) return str;
@@ -172,6 +107,69 @@ const saveAudioChunk = async (type, sessionUuid, chunkBuffer) => {
   }
 
   await fileHandle.write(chunkBuffer);
+};
+
+const isTruthy = (value) =>
+  ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+
+/**
+ * Returns true when Vertex AI (Google Cloud Console) mode is enabled.
+ * Supports SDK-standard and AVR-prefixed env vars.
+ */
+const isVertexAiMode = () =>
+  isTruthy(process.env.GOOGLE_GENAI_USE_VERTEXAI) ||
+  isTruthy(process.env.GEMINI_USE_VERTEXAI);
+
+/**
+ * Creates a GoogleGenAI client for either Google AI Studio (API key) or Vertex AI.
+ *
+ * Vertex AI: set GOOGLE_GENAI_USE_VERTEXAI=true (or GEMINI_USE_VERTEXAI=true),
+ * GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and configure ADC
+ * (e.g. GOOGLE_APPLICATION_CREDENTIALS or gcloud application-default login).
+ *
+ * Google AI Studio: set GEMINI_API_KEY (or GOOGLE_API_KEY).
+ */
+const createGoogleGenAIClient = () => {
+  if (isVertexAiMode()) {
+    const project =
+      process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_VERTEX_PROJECT;
+    const location =
+      process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_VERTEX_LOCATION;
+
+    if (!project || !location) {
+      throw new Error(
+        "Vertex AI mode requires GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION " +
+          "(or GEMINI_VERTEX_PROJECT and GEMINI_VERTEX_LOCATION)"
+      );
+    }
+
+    const options = { vertexai: true, project, location };
+    if (process.env.GEMINI_API_VERSION) {
+      options.apiVersion = process.env.GEMINI_API_VERSION;
+    }
+
+    console.log(
+      `Google GenAI client: Vertex AI (project=${project}, location=${location})`
+    );
+    return new GoogleGenAI(options);
+  }
+
+  const apiKey =
+    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+  if (!apiKey) {
+    throw new Error(
+      "Google AI Studio mode requires GEMINI_API_KEY (or GOOGLE_API_KEY). " +
+        "For Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with project and location."
+    );
+  }
+
+  const options = { apiKey };
+  if (process.env.GEMINI_API_VERSION) {
+    options.apiVersion = process.env.GEMINI_API_VERSION;
+  }
+
+  console.log("Google GenAI client: Google AI Studio (API key)");
+  return new GoogleGenAI(options);
 };
 
 /**
