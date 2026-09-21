@@ -19,19 +19,45 @@ This repository showcases the integration between **Agent Voice Response** and *
 
 ### Environment Variables
 
-Copy `.env.example` to `.env` and configure the following variables:
+Copy `.env.example` to `.env` and configure the following variables.
+
+#### Google AI Studio (API key) — default
 
 Required:
 
 ```
-GEMINI_API_KEY: Google API key with access to Gemini Live
+GEMINI_API_KEY — API key from https://aistudio.google.com/apikey
 ```
 
-Optional:
+Alternatively, `GOOGLE_API_KEY` is accepted (Google GenAI SDK convention).
+
+#### Vertex AI (Google Cloud Console)
+
+Use Vertex when Gemini is enabled in [Google Cloud Console](https://console.cloud.google.com/) rather than AI Studio. Authentication uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials) (not an API key).
+
+Required:
+
+```
+GOOGLE_GENAI_USE_VERTEXAI=true
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+```
+
+Configure credentials with one of:
+
+- `GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json`
+- `gcloud auth application-default login` (local development)
+
+Enable the [Vertex AI API](https://console.cloud.google.com/flows/enableapi?apiid=aiplatform.googleapis.com) and billing on the project.
+
+AVR-prefixed aliases (optional): `GEMINI_USE_VERTEXAI`, `GEMINI_VERTEX_PROJECT`, `GEMINI_VERTEX_LOCATION`.
+
+#### Shared optional settings
 
 ```
 PORT (default: 6037)
-GEMINI_MODEL (default: gemini-2.5-flash-preview-native-audio-dialog)
+GEMINI_MODEL (default: gemini-3.1-flash-live-preview in code)
+GEMINI_API_VERSION (optional API version override)
 GEMINI_INSTRUCTIONS (system prompt)
 
 # Choose one of the following instruction loading methods:
@@ -40,6 +66,22 @@ GEMINI_INSTRUCTIONS="You are a helpful assistant that can answer questions and h
 #GEMINI_FILE_INSTRUCTIONS="./instructions.txt"  # Method 3: Local file
 
 ```
+
+### Gemini thinking settings
+
+We’ve added support for the following Gemini settings:
+
+- `GEMINI_THINKING_LEVEL=MINIMAL`
+
+More details here 👉 https://ai.google.dev/gemini-api/docs/thinking?hl=en
+
+Supported values for `GEMINI_THINKING_LEVEL`:
+
+- `THINKING_LEVEL_UNSPECIFIED`
+- `LOW`
+- `MEDIUM`
+- `HIGH`
+- `MINIMAL`
 
 
 ## Usage
@@ -145,7 +187,9 @@ docker run --env-file .env -p 6037:6037 avr-sts-gemini
 
 ## Support AVR
 
-AVR is free and open-source. If you find it valuable, consider supporting its development:
+AVR is free and open-source.
+Any support is entirely voluntary and intended as a personal gesture of appreciation.
+Donations do not provide access to features, services, or special benefits, and the project remains fully available regardless of donations.
 
 <a href="https://ko-fi.com/agentvoiceresponse" target="_blank"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support us on Ko-fi"></a>
 

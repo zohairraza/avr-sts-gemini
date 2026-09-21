@@ -15,6 +15,17 @@ module.exports = {
     console.log("Hangup call");
     const url = process.env.AMI_URL || "http://127.0.0.1:6006";
     try {
+      // First, check if the call is still active
+      try {
+        await axios.post(`${url}/variables`, { uuid });
+      } catch (error) {
+        if (error.response && error.response.status === 404) {
+          console.log(`Call with UUID ${uuid} already hung up.`);
+          return `Call with UUID ${uuid} already hung up.`;
+        }
+        // For other errors, we still try to hangup
+      }
+
       const res = await axios.post(`${url}/hangup`, { uuid });
       console.log("Hangup response:", res.data);
       return res.data.message;

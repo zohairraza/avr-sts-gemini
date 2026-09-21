@@ -20,6 +20,7 @@ function loadTools() {
       .map(file => {
         try {
           const tool = require(path.join(dirPath, file));
+          console.log(`Loading tool: ${tool.name}`);
           return {
             name: tool.name,
             description: tool.description || '',

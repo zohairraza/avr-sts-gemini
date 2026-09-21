@@ -14,19 +14,130 @@
  * @see https://www.agentvoiceresponse.com
  */
 
+const url = require("url"); // Added url import
 const WebSocket = require("ws");
-const { create } = require("@alexanderolsen/libsamplerate-js");
-const { GoogleGenAI, Modality } = require("@google/genai");
+const { create, SRC_SINC_BEST_QUALITY, SRC_SINC_MEDIUM_QUALITY, SRC_SINC_FASTEST } = require("@alexanderolsen/libsamplerate-js");
+const { GoogleGenAI, Modality, ThinkingLevel } = require("@google/genai");
 const axios = require("axios");
 const fs = require("fs").promises;
+
 const path = require("path"); // Added path import
 const { loadTools, getToolHandler } = require("./loadTools");
 
-require("dotenv").config();
+require("dotenv").config({ path: ".env.gem" });
+require("dotenv").config({ path: ".env.google" });
+require("dotenv").config(); // fallback to .env
+
+// Custom logger with timestamps for troubleshooting delays
+const logFile = "logs/avr-sts-gemini.log"; // Log to a file within the logs directory
+const debugLogFile = "logs/avr-sts-gemini-debug.log"; // Debug log to a file within the logs directory
+
+const log = (...args) => {
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
+  fs.appendFile(debugLogFile, `[${new Date().toISOString()}] ${message}\n`).catch(console.error);
+  console.log(`[${new Date().toISOString()}]`, ...args);
+};
+const logError = (...args) => {
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
+  fs.appendFile(debugLogFile, `[${new Date().toISOString()}] ERROR: ${message}\n`).catch(console.error);
+  console.error(`[${new Date().toISOString()}]`, ...args);
+};
+const logDebug = (...args) => {
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
+  fs.appendFile(debugLogFile, `[${new Date().toISOString()}] DEBUG: ${message}\n`).catch(console.error);
+  console.debug(`[${new Date().toISOString()}]`, ...args);
+};
+const logInfo = (...args) => {
+  const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
+  fs.appendFile(debugLogFile, `[${new Date().toISOString()}] INFO: ${message}\n`).catch(console.error);
+  console.info(`[${new Date().toISOString()}]`, ...args);
+};
+
+const isTruthy = (value) =>
+  ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+
+/**
+ * Returns true when Vertex AI (Google Cloud Console) mode is enabled.
+ * Supports SDK-standard and AVR-prefixed env vars.
+ */
+const isVertexAiMode = () =>
+  isTruthy(process.env.GOOGLE_GENAI_USE_VERTEXAI) ||
+  isTruthy(process.env.GEMINI_USE_VERTEXAI);
+
+/**
+ * Creates a GoogleGenAI client for either Google AI Studio (API key) or Vertex AI.
+ *
+ * Vertex AI: set GOOGLE_GENAI_USE_VERTEXAI=true (or GEMINI_USE_VERTEXAI=true),
+ * GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, and configure ADC
+ * (e.g. GOOGLE_APPLICATION_CREDENTIALS or gcloud application-default login).
+ *
+ * Google AI Studio: set GEMINI_API_KEY (or GOOGLE_API_KEY).
+ */
+const createGoogleGenAIClient = () => {
+  if (isVertexAiMode()) {
+    const project =
+      process.env.GOOGLE_CLOUD_PROJECT || process.env.GEMINI_VERTEX_PROJECT;
+    const location =
+      process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_VERTEX_LOCATION;
+
+    if (!project || !location) {
+      throw new Error(
+        "Vertex AI mode requires GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION " +
+          "(or GEMINI_VERTEX_PROJECT and GEMINI_VERTEX_LOCATION)"
+      );
+    }
+
+    const options = { vertexai: true, project, location };
+    if (process.env.GEMINI_API_VERSION) {
+      options.apiVersion = process.env.GEMINI_API_VERSION;
+    }
+
+    log(
+      `Google GenAI client: Vertex AI (project=${project}, location=${location})`
+    );
+    return new GoogleGenAI(options);
+  }
+
+  const apiKey =
+    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+  if (!apiKey) {
+    throw new Error(
+      "Google AI Studio mode requires GEMINI_API_KEY (or GOOGLE_API_KEY). " +
+        "For Vertex AI, set GOOGLE_GENAI_USE_VERTEXAI=true with project and location."
+    );
+  }
+
+  const options = { apiKey };
+  if (process.env.GEMINI_API_VERSION) {
+    options.apiVersion = process.env.GEMINI_API_VERSION;
+  } else {
+    options.apiVersion = "v1alpha";
+  }
+
+  log("Google GenAI client: Google AI Studio (API key)");
+  return new GoogleGenAI(options);
+};
+
+
+function substituteEnvVars(str) {
+  if (!str) return str;
+  return str.replace(/\$\{\w+\}/g, (match, varName) => {
+    return process.env[varName] || match;
+  });
+}
+
+function extractInitialPrompt(systemInstruction) {
+  const regex = /## Phase 1: The Gatekeeper \(Navigation\)\n(?:.*\n)*?- \*\*PROMPT\*\*:\s*\"(.*?)\"/;
+  const match = systemInstruction.match(regex);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return "Hello, how can I help you today?"; // Default if not found
+}
 
 // Global map to store transcripts for each session
 const transcripts = new Map();
-console.log("Global transcripts map initialized.");
+log("Global transcripts map initialized.");
 
 // Global map to store file handles for each session's audio streams
 const audioFileHandles = new Map();
@@ -77,88 +188,133 @@ let globalUpsampler = null;
  */
 const initializeResamplers = async () => {
   try {
-    globalDownsampler = await create(1, 24000, 8000); //1 channel, 24kHz to 8kHz
-    globalUpsampler = await create(1, 8000, 16000); //1 channel, 8kHz to 16kHz
-    console.log("Global audio resamplers initialized");
+    let resamplerQuality = SRC_SINC_MEDIUM_QUALITY; // Default
+    if (process.env.RESAMPLER_QUALITY === "SRC_SINC_BEST_QUALITY") {
+      resamplerQuality = SRC_SINC_BEST_QUALITY;
+    } else if (process.env.RESAMPLER_QUALITY === "SRC_SINC_FASTEST") {
+      resamplerQuality = SRC_SINC_FASTEST;
+    }
+    log("Using resampler quality:", process.env.RESAMPLER_QUALITY || "SRC_SINC_MEDIUM_QUALITY");
+
+    globalDownsampler = await create(1, 24000, 8000, resamplerQuality); //1 channel, 24kHz to 8kHz
+    globalUpsampler = await create(1, 8000, 16000, resamplerQuality); //1 channel, 8kHz to 16kHz
+    log("Global audio resamplers initialized")
   } catch (error) {
-    console.error("Error initializing resamplers:", error);
+    logError("Error initializing resamplers:", error);
     process.exit(1);
   }
 };
 
-const connectToGeminiSdk = async (sessionUuid, callbacks) => {
+const connectToGeminiSdk = async (sessionUuid, systemInstruction, callbacks) => {
+  log(`[DEBUG] Starting Gemini connection for session ${sessionUuid}`);
   const model =
     process.env.GEMINI_MODEL ||
-    "gemini-live-2.5-flash-preview-native-audio-09-2025";
+    "gemini-2.5-flash-native-audio-preview-12-2025";
+  log(`[DEBUG] Using model: ${model}`);
+
+  const ai = createGoogleGenAIClient();
 
   const config = {
-    responseModalities: [Modality.AUDIO],
-    systemInstruction: "You are a helpful assistant.",
+    model: model, // Model as a top-level property
+    responseModalities: [Modality.AUDIO], // Also top-level
+    systemInstruction: { parts: [{ text: systemInstruction }] }, // Use the passed systemInstruction
+    outputAudioTranscription: {},
+    inputAudioTranscription: {}, // Enable input transcription for user audio
   };
 
-  if (process.env.GEMINI_INSTRUCTIONS) {
-    config.systemInstruction = process.env.GEMINI_INSTRUCTIONS;
-    console.log("Using GEMINI_INSTRUCTIONS from environment variable");
-  } else if (process.env.GEMINI_URL_INSTRUCTIONS) {
-    try {
-      const response = await axios.get(process.env.GEMINI_URL_INSTRUCTIONS, {
-        headers: {
-          "Content-Type": "application/json",
-          "X-AVR-UUID": sessionUuid,
-        },
-      });
-      console.log("Instructions loaded from GEMINI_URL_INSTRUCTIONS");
-      const data = await response.data;
-      console.log(data);
-      config.systemInstruction = data.system;
-    } catch (error) {
-      console.error(
-        `Error loading instructions from ${process.env.GEMINI_URL_INSTRUCTIONS}: ${error.message}`,
-      );
-    }
-  } else if (process.env.GEMINI_FILE_INSTRUCTIONS) {
-    try {
-      const data = await fs.readFile(
-        process.env.GEMINI_FILE_INSTRUCTIONS,
-        "utf8",
-      );
-      console.log("Using GEMINI_FILE_INSTRUCTIONS from environment variable");
-      console.log(data);
-      config.systemInstruction = data;
-    } catch (error) {
-      console.error(
-        `Error loading instructions from ${process.env.GEMINI_FILE_INSTRUCTIONS}: ${error.message}`,
-      );
-    }
-  } else {
-    console.log("Using default instructions");
-    config.systemInstruction =
-      "You are a helpful assistant and answer in a friendly tone.";
+  // Temperature configuration (0.1 - 0.4 recommended for voice agents to prevent hallucinations)
+  if (process.env.GEMINI_TEMPERATURE !== undefined) {
+    config.temperature = parseFloat(process.env.GEMINI_TEMPERATURE);
+    log(`Gemini temperature set to: ${config.temperature}`);
   }
 
+  // Context window compression to prevent 128k context blow-out / session disconnections
+  const triggerTokens = parseInt(process.env.CONTEXT_WINDOW_TRIGGER_TOKENS || "80000", 10);
+  const targetTokens = parseInt(process.env.CONTEXT_WINDOW_TARGET_TOKENS || "4000", 10);
+  if (triggerTokens > 0) {
+    config.contextWindowCompression = {
+      triggerTokens: triggerTokens,
+      slidingWindow: {
+        targetTokens: targetTokens,
+      },
+    };
+    log(`Context window compression enabled (triggerTokens: ${triggerTokens}, targetTokens: ${targetTokens})`);
+  }
+
+  // Add speechConfig (previously ttsConfig)
+  log(`GEMINI_TTS_VOICE_NAME from env: ${process.env.GEMINI_TTS_VOICE_NAME}`);
+  config.speechConfig = { // Now a direct property of config
+    voiceConfig: {
+      prebuiltVoiceConfig: {
+        voiceName: process.env.GEMINI_TTS_VOICE_NAME || "en-US-Standard-C", // Default voice
+      }
+    },
+  };
+
+  // Enable Proactive Audio if environment variable is set to 'true'
+  if (process.env.GEMINI_ENABLE_PROACTIVE_AUDIO === 'true') {
+    config.proactivity = {
+      proactiveAudio: true,
+    };
+    log("Proactive Audio enabled.");
+  }
+
+  // Enable Affective Dialog if environment variable is set to 'true'
+  if (process.env.GEMINI_ENABLE_AFFECTIVE_DIALOG === 'true') {
+    config.enableAffectiveDialog = true;
+    log("Affective Dialog enabled.");
+  }
+
+  // VAD configuration - reduced for faster response
+  config.realtimeInputConfig = {
+    automaticActivityDetection: {
+      silenceDurationMs: 5000,
+    },
+    activityHandling: "NO_INTERRUPTION",
+  };
+  log("VAD enabled with 5s silence duration.");
+
+  // Enable Proactive Audio for faster responses
+  config.proactivity = {
+    proactiveAudio: true,
+  };
+  log("Proactive Audio enabled");
+
+  // Upstream thinking configuration (default: MINIMAL level, 0 budget for zero voice latency)
+  config.thinkingConfig = {
+    thinkingLevel: process.env.GEMINI_THINKING_LEVEL || ThinkingLevel.MINIMAL,
+    thinkingBudget: +process.env.GEMINI_THINKING_BUDGET || 0,
+  };
+  log(`Thinking configured (budget: ${config.thinkingConfig.thinkingBudget}, level: ${config.thinkingConfig.thinkingLevel})`);
+
+  // Load tools
   try {
     const tools = loadTools();
+    log("Loaded tools details:", tools.map(tool => tool.name));
     config.tools = [{ functionDeclarations: tools }];
-    console.log(`Loaded ${tools.length} tools for Gemini.`);
+    log(`Loaded ${tools.length} tools for Gemini.`);
   } catch (error) {
-    console.error(`Error loading tools for Gemini: ${error.message}`);
+    logError(`Error loading tools for Gemini: ${error.message}`);
   }
 
-  console.log("Gemini Session Config:", config);
-  console.log("Gemini Session Model:", model);
+  log("Gemini Session Config:", JSON.stringify(config, null, 2));
+  log("Gemini Session Model:", model);
 
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY || "",
-    apiVersion: "v1alpha",
-  });
+  log(`[DEBUG] About to call ai.live.connect`);
+  log(`[DEBUG] Calling ai.live.connect with config`);
 
-  const session = await ai.live.connect({
-    model: model,
-    callbacks,
-    config,
-  });
-
-  return session;
+  try {
+    const session = await ai.live.connect({
+      model: model, // Use local model variable
+      callbacks: callbacks, // SDK will call onopen/onerror/onmessage
+      config: config,
+    });
+    log(`[DEBUG] ai.live.connect returned, session ready`);
+    return session; // Return just the session object
+   } catch (error) {
+    logError(`Error during ai.live.connect: ${error.message}`);
+    throw new Error(`Failed to establish Gemini session: ${error.message}`);
+  }
 };
 
 /**
@@ -168,12 +324,14 @@ const connectToGeminiSdk = async (sessionUuid, callbacks) => {
  * @param {WebSocket} clientWs - Client WebSocket connection
  */
 const handleClientConnection = (clientWs) => {
-  console.log("New client WebSocket connection received");
+  log("New client WebSocket connection received")
   let sessionUuid = null;
+  let systemInstruction = "You are a helpful assistant."; // Default
 
   let audioBuffer8k = [];
   let session = null;
   let audioFrames = [];
+
 
   /**
    * Processes Gemini audio chunks by downsampling and extracting frames.
@@ -232,11 +390,63 @@ const handleClientConnection = (clientWs) => {
       switch (message.type) {
         case "init":
           sessionUuid = message.uuid;
-          console.log("Session UUID:", sessionUuid);
+          log("Session UUID:", sessionUuid);
           transcripts.set(sessionUuid, []); // Initialize transcript for this session
-          console.log(`Transcript initialized for session ${sessionUuid}.`);
-          // Initialize Gemini connection when client is ready
-          initializeGeminiConnection();
+          log(`Transcript initialized for session ${sessionUuid}.`);
+
+          // Load dynamic instructions if configured
+          const loadInstructions = async () => {
+            if (process.env.GEMINI_INSTRUCTIONS) {
+              systemInstruction = substituteEnvVars(process.env.GEMINI_INSTRUCTIONS);
+              log("Using GEMINI_INSTRUCTIONS from environment variable")
+            } else if (process.env.GEMINI_URL_INSTRUCTIONS) {
+              try {
+                const startTime = Date.now();
+                log(`Fetching instructions from ${process.env.GEMINI_URL_INSTRUCTIONS} for session ${sessionUuid}`);
+                const response = await axios.get(process.env.GEMINI_URL_INSTRUCTIONS, {
+                  headers: {
+                    "Content-Type": "application/json",
+                    "X-AVR-UUID": sessionUuid,
+                  },
+                });
+                const fetchTime = Date.now() - startTime;
+                log(`Instructions fetched in ${fetchTime}ms from GEMINI_URL_INSTRUCTIONS`);
+                const data = await response.data;
+                log("Full instruction data:", JSON.stringify(data, null, 2));
+                systemInstruction = data.system;
+              } catch (error) {
+                logError(
+                  `Error loading instructions from ${process.env.GEMINI_URL_INSTRUCTIONS}: ${error.message}`,
+                );
+                // Keep default
+              }
+            } else if (process.env.GEMINI_FILE_INSTRUCTIONS) {
+              try {
+                const data = await fs.readFile(
+                  process.env.GEMINI_FILE_INSTRUCTIONS,
+                  "utf8",
+                );
+                log("Using GEMINI_FILE_INSTRUCTIONS from environment variable")
+                log(data);
+                systemInstruction = data;
+              } catch (error) {
+                logError(
+                  `Error loading instructions from ${process.env.GEMINI_FILE_INSTRUCTIONS}: ${error.message}`,
+                );
+                // Keep default
+              }
+            } else {
+              log("Using default instructions");
+            }
+          };
+
+          // Load instructions then initialize connection
+          loadInstructions().then(() => {
+            initializeGeminiConnection(systemInstruction);
+          }).catch((err) => {
+            logError("Failed to load instructions:", err);
+            initializeGeminiConnection(systemInstruction); // Use default
+          });
           break;
 
         case "audio":
@@ -244,7 +454,9 @@ const handleClientConnection = (clientWs) => {
           if (message.audio && session) {
             const audioBuffer = Buffer.from(message.audio, "base64");
             // Save user audio (8kHz PCM from client)
-            await saveAudioChunk("user", sessionUuid, audioBuffer);
+            if (process.env.SAVE_AUDIO_CHUNKS === 'true') {
+              saveAudioChunk("user", sessionUuid, audioBuffer).catch(console.error);
+            }
             const upsampledAudio = convert8kTo16k(audioBuffer);
             session.sendRealtimeInput({
               audio: {
@@ -256,28 +468,44 @@ const handleClientConnection = (clientWs) => {
           break;
 
         default:
-          console.log("Unknown message type from client:", message.type);
+          log("Unknown message type from client:", message.type);
           break;
       }
     } catch (error) {
-      console.error("Error processing client message:", error);
+      logError("Error processing client message:", error);
     }
   });
 
   // Initialize Gemini connection
-  const initializeGeminiConnection = async () => {
+  const initializeGeminiConnection = async (systemInstruction) => {
     try {
-      session = await connectToGeminiSdk(sessionUuid, {
+      // session is now the Gemini SDK's session object
+      session = await connectToGeminiSdk(sessionUuid, systemInstruction, {
         onopen: function () {
-          console.debug("Gemini Session Opened");
+          logDebug("Gemini Session Opened");
         },
         onmessage: async function (message) {
-          console.log("Gemini Message:", JSON.stringify(message, null, 2));
+          if (process.env.DEBUG_LOGS === 'true') {
+            // Only log message if it doesn't contain inlineData (audio chunks)
+            const hasInlineData = message.serverContent?.modelTurn?.parts?.some(part => part.inlineData);
+            if (!hasInlineData) {
+              log("Gemini Message:", JSON.stringify(message, null, 2));
+            }
+          }
 
           // Check for setup complete
           if (message.setupComplete) {
-            console.log("Setup complete, session ready");
+            log("Setup complete, session ready");
             return;
+          }
+
+          // Handle AudioStreamEnd event for silence detection
+          if (message.serverContent?.audioStreamEnd) {
+            log("INFO: AudioStreamEnd event received. Silence detected.");
+            session.sendRealtimeInput({
+              text: "Are we still connected?",
+            });
+            return; // No further processing for this message
           }
 
           // ASR output from Gemini (user's speech) - input transcription
@@ -288,31 +516,57 @@ const handleClientConnection = (clientWs) => {
                 text: message.text,
                 timestamp: new Date().toISOString(),
               });
-              console.log("User says:", message.text);
-              console.log("Transcripts:", transcripts.get(sessionUuid));
-            }
-          }
+              log("User says:", message.text);
+              log("Transcripts:", transcripts.get(sessionUuid));
+             }
+           }
 
-          // Model Turn with parts (audio + text output)
+           // Handle output transcription (AI speech)
+           if (message.serverContent?.outputTranscription) {
+             log("Output Transcription:", message.serverContent.outputTranscription);
+             if (transcripts.has(sessionUuid)) {
+               transcripts.get(sessionUuid).push({
+                 speaker: "AI",
+                 text: message.serverContent.outputTranscription.text,
+                 timestamp: new Date().toISOString(),
+               });
+             }
+           }
+
+           // Handle input transcription (user speech)
+           if (message.serverContent?.inputTranscription) {
+             log("Input Transcription:", message.serverContent.inputTranscription);
+             if (transcripts.has(sessionUuid)) {
+               transcripts.get(sessionUuid).push({
+                 speaker: "User",
+                 text: message.serverContent.inputTranscription.text,
+                 timestamp: new Date().toISOString(),
+               });
+             }
+           }
+
+           // Model Turn with parts (audio + text output)
           if (message.serverContent?.modelTurn?.parts) {
             const modelTurn = message.serverContent.modelTurn;
-            console.log("Model Turn received:", modelTurn);
+            log("Model Turn received:", modelTurn);
             const parts = modelTurn.parts;
-            console.log("Parts count:", parts?.length);
+            log("Parts count:", parts?.length);
             for (let i = 0; i < parts?.length; i++) {
               const part = parts[i];
-              console.log(`Part ${i}:`, JSON.stringify(part, null, 2));
+              if (process.env.DEBUG_LOGS === 'true' && !part?.inlineData) log(`Part ${i}:`, JSON.stringify(part, null, 2));
 
               // Handle Audio
               if (part?.inlineData) {
                 const inlineData = part.inlineData;
-                console.log(
-                  "Processing audio chunk, size:",
-                  inlineData.data?.length,
-                );
+                // log(
+                //   "Processing audio chunk, size:",
+                //   inlineData.data?.length,
+                // );
                 const audioChunk = Buffer.from(inlineData.data, "base64");
                 // Save AI audio (24kHz PCM from Gemini)
-                await saveAudioChunk("ai", sessionUuid, audioChunk);
+                if (process.env.SAVE_AUDIO_CHUNKS === 'true') {
+                  saveAudioChunk("ai", sessionUuid, audioChunk).catch(console.error);
+                }
                 audioFrames = processGeminiAudioChunk(audioChunk);
                 // Send audio frames to client
                 audioFrames.forEach((frame) => {
@@ -326,19 +580,19 @@ const handleClientConnection = (clientWs) => {
               }
               // Text content from Gemini's response (AI speaking) - output transcription
               if (part?.text) {
-                console.log("AI text transcription received:", part.text);
+                log("AI text transcription received:", part.text);
                 if (transcripts.has(sessionUuid)) {
                   transcripts.get(sessionUuid).push({
                     speaker: "AI",
                     text: part.text,
                     timestamp: new Date().toISOString(),
                   });
-                  console.log("AI says:", part.text);
+                  log("AI says:", part.text);
                 }
               }
             }
           } else if (message.toolCall?.functionCalls) {
-            console.log(
+            log(
               "Gemini Session Tool Calls:",
               message.toolCall.functionCalls,
             );
@@ -359,20 +613,20 @@ const handleClientConnection = (clientWs) => {
                 });
                 functionResponses.push(obj);
               }
-              console.log("Gemini Session Tool Response:", obj.response.result);
+              log("Gemini Session Tool Response:", obj.response.result);
             }
 
             session.sendToolResponse({ functionResponses });
           } else if (message.serverContent?.interrupted) {
-            console.log("Gemini Session Interruption");
+            log("Gemini Session Interruption");
             audioFrames = [];
             clientWs.send(JSON.stringify({ type: "interruption" }));
-          } else {
-            // console.log("Gemini Session Message:", message);
+          } else { 
+            // log("Gemini Session Message:", message);
           }
         },
         onerror: function (e) {
-          console.error("Gemini Session Error:", e);
+          logError("Gemini Session Error:", e);
           clientWs.send(
             JSON.stringify({
               type: "error",
@@ -381,25 +635,29 @@ const handleClientConnection = (clientWs) => {
           );
         },
         onclose: function (event) {
-          console.info(
+          logInfo(
             "Gemini Session Closed. Code:",
-            event.code,
+            event?.code,
             "Reason:",
-            event.reason,
+            event?.reason,
           );
           clientWs.close();
         },
       });
       // begin gemini conversation
+      const rawInitialPrompt = extractInitialPrompt(systemInstruction);
+      const initialPrompt = substituteEnvVars(rawInitialPrompt);
       session.sendRealtimeInput({
-        text: "Please start the conversation.",
+        text: initialPrompt,
       });
+
     } catch (error) {
-      console.error("Error initializing Gemini connection:", error);
+      logError("Error initializing Gemini connection:", error);
+      const message = error?.message || "Failed to initialize Gemini connection";
       clientWs.send(
         JSON.stringify({
           type: "error",
-          message: "Failed to initialize Gemini connection",
+          message: message,
         }),
       );
     }
@@ -407,12 +665,12 @@ const handleClientConnection = (clientWs) => {
 
   // Handle client WebSocket close
   clientWs.on("close", () => {
-    console.log("Client WebSocket connection closed");
+    log("Client WebSocket connection closed")
     cleanup();
   });
 
   clientWs.on("error", (err) => {
-    console.error("Client WebSocket error:", err);
+    logError("Client WebSocket error:", err);
     cleanup();
   });
 
@@ -428,14 +686,14 @@ const handleClientConnection = (clientWs) => {
     if (audioFileHandles.has(handleUserKey)) {
       await audioFileHandles.get(handleUserKey).close();
       audioFileHandles.delete(handleUserKey);
-      console.log(`User audio file handle for session ${sessionUuid} closed.`);
+      log(`User audio file handle for session ${sessionUuid} closed.`);
     }
 
     const handleAiKey = `${sessionUuid}-ai`;
     if (audioFileHandles.has(handleAiKey)) {
       await audioFileHandles.get(handleAiKey).close();
       audioFileHandles.delete(handleAiKey);
-      console.log(`AI audio file handle for session ${sessionUuid} closed.`);
+      log(`AI audio file handle for session ${sessionUuid} closed.`);
     }
 
     if (sessionUuid && transcripts.has(sessionUuid)) {
@@ -448,17 +706,17 @@ const handleClientConnection = (clientWs) => {
 
       try {
         await fs.writeFile(logFilePath, formattedTranscript);
-        console.log(
+        log(
           `Transcript for session ${sessionUuid} saved to ${logFilePath}`,
         );
       } catch (error) {
-        console.error(
+        logError(
           `Failed to save transcript for session ${sessionUuid}:`,
           error,
         );
       } finally {
         transcripts.delete(sessionUuid);
-        console.log(
+        log(
           `Transcript for session ${sessionUuid} cleared from memory.`,
         );
       }
@@ -470,7 +728,7 @@ const handleClientConnection = (clientWs) => {
  * Global cleanup function to destroy resamplers when process is terminated.
  */
 const cleanupGlobalResources = () => {
-  console.log("Cleaning up global resources...");
+  log("Cleaning up global resources...");
   if (globalDownsampler) {
     globalDownsampler.destroy();
     globalDownsampler = null;
@@ -479,18 +737,18 @@ const cleanupGlobalResources = () => {
     globalUpsampler.destroy();
     globalUpsampler = null;
   }
-  console.log("Global resources cleaned up");
+  log("Global resources cleaned up")
 };
 
 // Handle process termination signals
 process.on("SIGINT", () => {
-  console.log("Received SIGINT, shutting down gracefully...");
+  log("Received SIGINT, shutting down gracefully...");
   cleanupGlobalResources();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  console.log("Received SIGTERM, shutting down gracefully...");
+  log("Received SIGTERM, shutting down gracefully...");
   cleanupGlobalResources();
   process.exit(0);
 });
@@ -504,16 +762,39 @@ const startServer = async () => {
     const PORT = process.env.PORT || 6037;
     const wss = new WebSocket.Server({ port: PORT });
 
-    wss.on("connection", (clientWs) => {
-      console.log("New client connected");
+    wss.on("connection", (clientWs, request) => { // Added 'request' parameter
+      log("New client connected")
+
+      // Parse query parameters from the WebSocket URL
+      const query = url.parse(request.url, true).query;
+      log("WebSocket URL Query Parameters:", query);
+
+      // Set specific query parameters as process.env variables
+      // These correspond to the dynamic variables passed from Asterisk via AudioSocket 'vars'
+      const dynamicVarsToSet = [
+        "BUSINESS_NAME",
+        "WEBSITE",
+        "MAPS_URL",
+        "COMMENTS",
+        "SUBURB_LOCATION",
+        "COMPETITOR_NAME",
+      ];
+
+      for (const varName of dynamicVarsToSet) {
+        if (query[varName]) {
+          process.env[varName.toUpperCase()] = query[varName];
+          log(`Set process.env.${varName.toUpperCase()}=${query[varName]}`);
+        }
+      }
+
       handleClientConnection(clientWs);
     });
 
-    console.log(
+    log(
       `Gemini Speech-to-Speech WebSocket server running on port ${PORT}`,
     );
   } catch (error) {
-    console.error("Failed to start server:", error);
+    logError("Failed to start server:", error);
     process.exit(1);
   }
 };
