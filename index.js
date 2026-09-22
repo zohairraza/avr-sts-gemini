@@ -23,8 +23,7 @@ const fs = require("fs").promises;
 const path = require("path"); // Added path import
 const { loadTools, getToolHandler } = require("./loadTools");
 
-require("dotenv").config({ path: ".env.gem" });
-require("dotenv").config(); // fallback to .env (dotenv never overrides an already-set var)
+require("dotenv").config();
 
 // Timestamped logger: console plus a debug file in logs/
 const debugLogFile = "logs/avr-sts-gemini-debug.log";
