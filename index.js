@@ -1,6 +1,6 @@
 /**
  * index.js
- * Entry point for Gemini Speech-to-Speech streaming WebSocket server.
+ * Entry point for the Gemini Speech-to-Speech streaming WebSocket server.
  * This server handles real-time audio streaming between clients and Gemini's API,
  * performing necessary audio format conversions and WebSocket communication.
  *
@@ -24,8 +24,7 @@ const path = require("path"); // Added path import
 const { loadTools, getToolHandler } = require("./loadTools");
 
 require("dotenv").config({ path: ".env.gem" });
-require("dotenv").config({ path: ".env.google" });
-require("dotenv").config(); // fallback to .env
+require("dotenv").config(); // fallback to .env (dotenv never overrides an already-set var)
 
 // Timestamped logger: console plus a debug file in logs/
 const debugLogFile = "logs/avr-sts-gemini-debug.log";
