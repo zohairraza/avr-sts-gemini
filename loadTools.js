@@ -41,6 +41,18 @@ function loadTools() {
     ...loadToolsFromDir(toolsDir)      // Custom tools
   ];
 
+  // Optional per-agent exclusion, e.g. DISABLED_TOOLS=check_availability,book_appointment
+  // (all agents share the same tools/ directory; this lets one agent opt out of specific tools
+  // without affecting the others).
+  const disabled = (process.env.DISABLED_TOOLS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (disabled.length > 0) {
+    allTools = allTools.filter((tool) => !disabled.includes(tool.name));
+    console.log(`Excluded tools via DISABLED_TOOLS: ${disabled.join(', ')}`);
+  }
+
   // Warning if no tools found
   if (allTools.length === 0) {
     console.warn(`No tools found in ${avrToolsDir} or ${toolsDir}`);
